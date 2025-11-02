@@ -4,7 +4,6 @@ This script is called by setup.bat to ensure all required resources are availabl
 """
 
 import sys
-import os
 
 print("\n=== Downloading NLTK Data ===")
 try:

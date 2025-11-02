@@ -109,9 +109,10 @@ desktop.ini
 [Dd]esktop.ini
 $RECYCLE.BIN/
 
-# Project-specific data files (exclude large datasets)
+# Project-specific data files (exclude generated/large datasets)
 # Keep emotion_responses.json for the app to work
-# data/*.csv  # Commented - large files
-# data/train.txt
+# Keep source .txt files as they are needed to generate CSV
+data/emotion_dataset.csv  # Generated file - can be regenerated
+# data/train.txt  # Source files - keep in repo
 # data/test.txt
 # data/val.txt
