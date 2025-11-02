@@ -1,238 +1,205 @@
+"""
+Emotion Detection Chatbot - Flask Web Application
+Main entry point for the emotion detection chatbot API and web interface.
+
+This module provides RESTful API endpoints for emotion prediction and serves
+the interactive web interface for real-time emotion detection in conversations.
+"""
+
 from flask import Flask, request, jsonify, render_template
-from emotion_model import predict_emotion, get_emotion_clusters, get_transition_matrix
+from emotion_model import predict_emotion, get_emotion_clusters, get_transition_matrix, get_emotion_statistics
 import random
 import json
+import os
+import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
-# Context-aware adaptive replies
-RESPONSES = json.load(open("../data/emotion_responses.json", "r"))
+# Load emotion responses configuration
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RESPONSES_FILE = os.path.join(BASE_DIR, "data", "emotion_responses.json")
+
+try:
+    with open(RESPONSES_FILE, "r", encoding="utf-8") as f:
+        RESPONSES = json.load(f)
+    logger.info(f"Loaded emotion responses from {RESPONSES_FILE}")
+except FileNotFoundError:
+    logger.error(f"Emotion responses file not found: {RESPONSES_FILE}")
+    RESPONSES = {
+        "neutral": ["I'm here to listen. How can I help you today?"],
+        "joy": ["That's wonderful! I'm glad you're feeling positive!"],
+        "sadness": ["I'm sorry you're feeling this way. You're not alone."],
+        "anger": ["I understand you're feeling frustrated. Let's work through this."],
+        "fear": ["It's okay to feel afraid. You're brave for expressing it."]
+    }
+
 
 @app.route("/")
 def home():
+    """Serve the main chatbot interface."""
     return render_template("index.html")
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json()
-    message = data.get("message", "")
+    """
+    Predict emotion from user message and generate appropriate response.
+    
+    Request body:
+        - message (str): User's text input
+        
+    Returns:
+        JSON response containing:
+        - predicted_emotion (str): Detected emotion label
+        - bot_reply (str): Generated response
+        - transition_probs (dict): Emotion transition probabilities
+        - emotion_statistics (dict): Statistics about emotion history
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+            
+        message = data.get("message", "").strip()
+        
+        if not message:
+            return jsonify({"error": "Message field missing or empty"}), 400
+        
+        # Predict emotion using the ML model
+        emotion, embedding = predict_emotion(message)
+        
+        # Get appropriate response based on detected emotion
+        response_list = RESPONSES.get(emotion, RESPONSES.get("neutral", ["I understand."]))
+        bot_reply = random.choice(response_list)
+        
+        # Get transition probabilities and statistics
+        transition_probs = get_transition_matrix()
+        emotion_stats = get_emotion_statistics()
+        
+        logger.info(f"Predicted emotion: {emotion} for message: '{message[:50]}...'")
+        
+        return jsonify({
+            "predicted_emotion": emotion,
+            "bot_reply": bot_reply,
+            "transition_probs": transition_probs,
+            "emotion_statistics": emotion_stats,
+            "confidence": float(max(embedding)) if embedding is not None else 0.0
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in predict endpoint: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
-    if not message:
-        return jsonify({"error": "Message field missing"}), 400
 
-    emotion, emb = predict_emotion(message)
-    response_list = RESPONSES.get(emotion, RESPONSES["neutral"])
-    bot_reply = random.choice(response_list)
+@app.route("/stats", methods=["GET"])
+def stats():
+    """Get emotion statistics and transition matrix."""
+    try:
+        return jsonify({
+            "transition_matrix": get_transition_matrix(),
+            "statistics": get_emotion_statistics()
+        })
+    except Exception as e:
+        logger.error(f"Error in stats endpoint: {str(e)}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
-    # Generate clustering visualization after 5+ interactions
-    clusters = get_emotion_clusters()
-    transition_probs = get_transition_matrix()
 
-    return jsonify({
-        "predicted_emotion": emotion,
-        "bot_reply": bot_reply,
-        "transition_probs": transition_probs
-    })
+@app.route("/clusters", methods=["GET"])
+def clusters():
+    """Generate and return emotion cluster visualization."""
+    try:
+        cluster_path = get_emotion_clusters()
+        if cluster_path:
+            return jsonify({
+                "cluster_image": cluster_path,
+                "message": "Clusters generated successfully"
+            })
+        else:
+            return jsonify({
+                "message": "Not enough data for clustering (need at least 5 interactions)"
+            }), 200
+    except Exception as e:
+        logger.error(f"Error generating clusters: {str(e)}")
+        return jsonify({"error": f"Error generating clusters: {str(e)}"}), 500
+
+
+@app.route("/export", methods=["GET"])
+def export_conversation():
+    """Export conversation history as JSON or CSV."""
+    from emotion_model import emotion_texts, emotion_memory
+    try:
+        export_format = request.args.get('format', 'json')  # 'json' or 'csv'
+        
+        if not emotion_memory or not emotion_texts:
+            return jsonify({"error": "No conversation data to export"}), 400
+        
+        # Prepare data
+        conversation_data = []
+        for i, (text, emotion) in enumerate(zip(emotion_texts, emotion_memory)):
+            conversation_data.append({
+                "timestamp": i,  # Simple index-based timestamp
+                "text": text,
+                "emotion": emotion
+            })
+        
+        if export_format == 'csv':
+            # Return CSV
+            csv_output = "timestamp,text,emotion\n"
+            for item in conversation_data:
+                escaped_text = item['text'].replace('"', '""')
+                csv_output += f"{item['timestamp']},\"{escaped_text}\",{item['emotion']}\n"
+            
+            from flask import Response
+            return Response(
+                csv_output,
+                mimetype='text/csv',
+                headers={'Content-Disposition': 'attachment; filename=emotion_conversation.csv'}
+            )
+        else:
+            # Return JSON
+            return jsonify(conversation_data)
+            
+    except Exception as e:
+        logger.error(f"Error exporting conversation: {str(e)}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route("/history", methods=["GET"])
+def get_history():
+    """Get conversation history with timestamps."""
+    from emotion_model import emotion_texts, emotion_memory
+    try:
+        history = []
+        for i, (text, emotion) in enumerate(zip(emotion_texts, emotion_memory)):
+            history.append({
+                "index": i,
+                "text": text,
+                "emotion": emotion
+            })
+        return jsonify({"history": history})
+    except Exception as e:
+        logger.error(f"Error getting history: {str(e)}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors."""
+    return jsonify({"error": "Endpoint not found"}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors."""
+    return jsonify({"error": "Internal server error"}), 500
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
-    '''
-def get_transition_matrix():
-    """Returns normalized transition probabilities."""
-    normalized_matrix = {}
-    for e1, transitions in transition_matrix.items():
-        total = sum(transitions.values())
-        if total > 0:
-            normalized_matrix[e1] = {e2: count / total for e2, count in transitions.items()}
-        else:
-            normalized_matrix[e1] = {e2: 0 for e2 in transitions}
-    return normalized_matrix
-from textblob import TextBlob
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-import os       
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
-import numpy as np
-import joblib
-MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-labels = ['anger', 'disgust', 'fear', 'joy', 'neutral', '
-sadness', 'surprise']
-# Emotion transition memory (Markov-like)
-emotion_memory = []
-transition_matrix = {e1: {e2: 0 for e2 in labels} for e1 in labels}
-def transformer_emotion(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-        probs = torch.nn.functional.softmax(outputs.logits, dim=1)
-        pred_label = labels[torch.argmax(probs)]
-    return pred_label, probs.numpy().flatten()
-def sentiment_tone(text):
-    polarity = TextBlob(text).sentiment.polarity
-    if polarity > 0.3: return "positive"
-    elif polarity < -0.3: return "negative"
-    return "neutral"
-def update_transition(prev, current):
-    if prev and current:
-        transition_matrix[prev][current] += 1
-def predict_emotion(text):
-    transformer_label, emb = transformer_emotion(text)
-    sentiment = sentiment_tone(text)
-    last_emotion = emotion_memory[-1] if emotion_memory else None
-    emotion_memory.append(transformer_label)
-    update_transition(last_emotion, transformer_label)
-
-    if transformer_label == "neutral" and sentiment == "negative":
-        if any(w in text.lower() for w in ["tired", "lonely", "work", "stress"]):
-            transformer_label = "sadness"
-
-    return transformer_label, emb
-def get_emotion_clusters():
-    """Clusters the emotion embeddings seen so far using KMeans."""
-    if len(emotion_memory) < 5:
-        return None
-
-    X = []
-    for text in emotion_memory:
-        _, emb = transformer_emotion(text)
-        X.append(emb)
-    X = np.array(X)
-    kmeans = KMeans(n_clusters=3, random_state=0).fit(X)
-    pca = PCA(n_components=2)
-    X_reduced = pca.fit_transform(X)
-    plt.figure(figsize=(8, 6))
-    plt.scatter(X_reduced[:, 0], X_reduced[:, 1], c=k
-means.labels_, cmap='viridis')
-    plt.title("Emotion Embedding Clusters")
-    plt.xlabel("PCA Component 1")
-    plt.ylabel("PCA Component 2")
-    cluster_path = "static/emotion_clusters.png"
-    plt.savefig(cluster_path)
-    plt.close()
-    return cluster_path
-def get_transition_matrix():
-    """Returns normalized transition probabilities."""
-    normalized_matrix = {}
-    for e1, transitions in transition_matrix.items():
-        total = sum(transitions.values())
-        if total > 0:
-            normalized_matrix[e1] = {e2: count / total for e2, count in transitions.items()}
-        else:
-            normalized_matrix[e1] = {e2: 0 for e2 in transitions}
-    return normalized_matrix
-inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-        probs = torch.nn.functional.softmax(outputs.logits, dim=1)
-        pred_label = labels[torch.argmax(probs)]
-    return pred_label, probs.numpy().flatten()
-def sentiment_tone(text):
-    polarity = TextBlob(text).sentiment.polarity
-    if polarity > 0.3: return "positive"
-    elif polarity < -0.3: return "negative"
-    return "neutral"
-def update_transition(prev, current):
-    if prev and current:
-        transition_matrix[prev][current] += 1
-def predict_emotion(text):
-    transformer_label, emb = transformer_emotion(text)
-    sentiment = sentiment_tone(text)
-    last_emotion = emotion_memory[-1] if emotion_memory else None
-    emotion_memory.append(transformer_label)
-    update_transition(last_emotion, transformer_label)
-
-    if transformer_label == "neutral" and sentiment == "negative":
-        if any(w in text.lower() for w in ["tired", "lonely", "work", "stress"]):
-            transformer_label = "sadness"
-
-    return transformer_label, emb
-def get_emotion_clusters():
-    """Clusters the emotion embeddings seen so far using KMeans."""
-    if len(emotion_memory) < 5:
-        return None
-
-    X = []
-    for text in emotion_memory:
-        _, emb = transformer_emotion(text)
-        X.append(emb)
-
-    kmeans = KMeans(n_clusters=3, random_state=42)
-    y_pred = kmeans.fit_predict(X)
-
-    pca = PCA(n_components=2)
-    reduced = pca.fit_transform(X)
-
-    plt.figure(figsize=(6,4))
-    plt.scatter(reduced[:,0], reduced[:,1], c=y_pred, cmap="viridis")
-    plt.title("Emotion Cluster Visualization")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.savefig("../data/emotion_clusters.png")
-    plt.close()
-
-    return y_pred
-def get_transition_matrix():
-    """Returns normalized transition probabilities."""
-    normalized_matrix = {}
-    for e1, transitions in transition_matrix.items():
-        total = sum(transitions.values())
-        if total > 0:
-            normalized_matrix[e1] = {e2: count / total for e2, count in transitions.items()}
-        else:
-            normalized_matrix[e1] = {e2: 0 for e2 in transitions}
-    return normalized_matrix
-inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-        probs = torch.nn.functional.softmax(outputs.logits, dim=1)
-        pred_label = labels[torch.argmax(probs)]
-    return pred_label, probs.numpy().flatten()
-def sentiment_tone(text):
-    polarity = TextBlob(text).sentiment.polarity
-    if polarity > 0.3: return "positive"
-    elif polarity < -0.3: return "negative"
-    return "neutral"
-def update_transition(prev, current):
-    if prev and current:
-        transition_matrix[prev][current] += 1
-def predict_emotion(text):
-    transformer_label, emb = transformer_emotion(text)
-    sentiment = sentiment_tone(text)
-    last_emotion = emotion_memory[-1] if emotion_memory else None
-    emotion_memory.append(transformer_label)
-    update_transition(last_emotion, transformer_label)
-
-    if transformer_label == "neutral" and sentiment == "negative":
-        if any(w in text.lower() for w in ["tired", "lonely", "work", "stress"]):
-            transformer_label = "sadness"
-
-    return transformer_label, emb
-def get_emotion_clusters(): 
-    """Clusters the emotion embeddings seen so far using KMeans."""
-    if len(emotion_memory) < 5:
-        return None
-
-    X = []
-    for text in emotion_memory:
-        _, emb = transformer_emotion(text)
-        X.append(emb)
-
-    kmeans = KMeans(n_clusters=3, random_state=42)
-    y_pred = kmeans.fit_predict(X)
-
-    pca = PCA(n_components=2)
-    reduced = pca.fit_transform(X)
-
-    plt.figure(figsize=(6,4))
-    plt.scatter(reduced[:,0], reduced[:,1], c=y_pred, cmap="viridis")
-    plt.title("Emotion Cluster Visualization")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.savefig("../data/emotion_clusters.png")
-    plt.close()
-
-    return y_pred
-'''
+    logger.info("Starting Emotion Detection Chatbot server...")
+    app.run(debug=True, host="0.0.0.0", port=5000)
