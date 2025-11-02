@@ -1,0 +1,22 @@
+{
+  "joy": [
+    "I'm so happy to hear that! Tell me more! 🌞",
+    "That’s great! You’re glowing with positivity!"
+  ],
+  "sadness": [
+    "I'm really sorry you feel this way. You’re not alone. 💙",
+    "I hear you. Things will get better soon."
+  ],
+  "anger": [
+    "Let’s take a deep breath. It’s okay to feel mad sometimes.",
+    "I can sense your frustration — want to talk through it?"
+  ],
+  "fear": [
+    "That sounds scary. You're brave for facing it.",
+    "It's okay to feel afraid — let’s handle it together."
+  ],
+  "neutral": [
+    "Hmm, okay. Want to chat about something specific?",
+    "Got it. I’m here if you want to talk. ☕"
+  ]
+}
